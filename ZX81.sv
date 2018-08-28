@@ -4,7 +4,7 @@
 //  Copyright (C) 2018 Sorgelig
 //
 //  ZX80-ZX81 replica for MiST
-//  Copyright (C) 2018 GyР вЂњР’В¶rgy Szombathelyi
+//  Copyright (C) 2018 Szombathelyi Gyorgy
 //
 //  This program is free software; you can redistribute it and/or modify it
 //  under the terms of the GNU General Public License as published by the Free
@@ -126,6 +126,7 @@ localparam CONF_STR = {
 	"O4,Model,ZX80,ZX81;",
 	"OAB,RAM size,1k,16k,32k,64k;",
 	"O8,Swap joy axle,Off,On;",
+	"OEF,CHR$128/UDG,128 Chars,64 Chars,Disabled;",
 	"R0,Reset;",
 	"V,v1.0.",`BUILD_DATE
 };
@@ -284,32 +285,36 @@ dpram #(.ADDRWIDTH(14), .NUMWORDS(12288), .MEM_INIT_FILE("zx8x.mif")) rom
 	.q_a(rom_out)
 );
 
-wire [12:0] rom_a  = nRFSH ? addr[12:0] : { addr[12:9], ram_data_latch[5:0], row_counter };
-wire [14:0] tape_load_addr = (&mem_size ? 15'h4000 : 15'h0) + ((ioctl_index[7:6] == 1) ? tape_addr + 4'd8 : tape_addr-1'd1);
+//wire        chr128_e  = (addr[15:13] == 'b001); // 8KB at 2000h
+wire        chr128_e  = zx81 & ~status[15] & (addr[15:10] == 'b001100); // 1KB at 3000h
+
 wire [15:0] ram_a;
 wire        ram_e_64k = &mem_size & (addr[13] | (addr[15] & nM1));
-wire			rom_e  = ~addr[14] & (~addr[12] | zx81) & ~ram_e_64k;
-wire        ram_e  = addr[14] | ram_e_64k;
+wire        ram_e  = addr[14] | ram_e_64k | chr128_e;
 wire        ram_we = ~nWR & ~nMREQ & ram_e;
 wire  [7:0] ram_in = tapeloader ? tape_in_byte_r : cpu_dout;
-wire  [7:0] rom_out;
 wire  [7:0] ram_out;
-wire  [7:0] mem_out;
 
+wire [12:0] rom_a  = nRFSH ? addr[12:0] : { addr[12:9]+(chr128_e & ram_data_latch[7] & addr[8] & ~status[14]), ram_data_latch[5:0], row_counter };
+wire			rom_e  = ~addr[14] & ~addr[13] & (~addr[12] | zx81) & ~ram_e_64k;
+wire  [7:0] rom_out;
+
+wire  [7:0] mem_out;
 always_comb begin
 	casex({ tapeloader, rom_e, ram_e })
-		'b110: mem_out = tape_loader_patch[addr - (zx81 ? 13'h0347 : 13'h0207)];
-		'b010: mem_out = rom_out;
-		'b001: mem_out = ram_out;
-		default: mem_out = 8'd0;
+		  'b1XX: mem_out = tape_loader_patch[addr - (zx81 ? 13'h0347 : 13'h0207)];
+		  'b01X: mem_out = rom_out;
+		  'b001: mem_out = ram_out;
+		default: mem_out = 8'hFF;
 	endcase
 
-	casex({tapeloader, mem_size })
-	   'b1XX: ram_a = tape_load_addr;
-	   'b000: ram_a = { 6'b000000,            addr[9:0]  }; //1k
-		'b001: ram_a = { 2'b00,                addr[13:0] }; //16k
-		'b010: ram_a = { 1'b0, addr[15] & nM1, addr[13:0] }; //32k
-		'b011: ram_a = { addr[15] & nM1,       addr[14:0] }; //64k
+	casex({tapeloader, chr128_e, mem_size })
+		'b1_X_XX: ram_a = { ~&mem_size, &mem_size, ioctl_index[7:6] ? tape_addr + 4'd8 : tape_addr-1'd1}; // loading address
+		'b0_1_XX: ram_a = { 3'b000,               rom_a      }; //chr128/UDG
+		'b0_0_00: ram_a = { 6'b100000,            addr[9:0]  }; //1k
+		'b0_0_01: ram_a = { 2'b10,                addr[13:0] }; //16k
+		'b0_0_10: ram_a = { 1'b1, addr[15] & nM1, addr[13:0] }; //32k
+		'b0_0_11: ram_a = { addr[15] & nM1,       addr[14:0] }; //64k
 	endcase
 end
 
@@ -373,7 +378,7 @@ end
 
 // character generation
 wire      nopgen = addr[15] & ~mem_out[6] & nHALT;
-wire      data_latch_enable = nRFSH & ce_cpu_n & ~nMREQ;
+wire      data_latch_enable = nRFSH & ce_cpu_p & ~nMREQ;
 reg [7:0] ram_data_latch;
 reg       nopgen_store;
 reg [2:0] row_counter;
@@ -426,7 +431,7 @@ reg [7:0] sync_counter;
 reg       NMIlatch;
 reg       hsync;
 always @(posedge clk_sys) begin
-	if(ce_cpu_n) begin
+	if(ce_cpu_p) begin
 		sync_counter <= sync_counter + 1'd1;
 		if(sync_counter == 206) sync_counter <= 0;
 		if(sync_counter == 15)  hsync <= 1;
