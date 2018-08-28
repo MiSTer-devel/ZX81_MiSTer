@@ -118,7 +118,6 @@ entity T80 is
 		IntCycle_n : out std_logic;
 		IntE       : out std_logic;
 		Stop       : out std_logic;
-		dbg        : out std_logic;
 		out0       : in  std_logic := '0';  -- 0 => OUT(C),0, 1 => OUT(C),255
 		REG        : out std_logic_vector(207 downto 0) -- IY, HL', DE', BC', IX, HL, DE, BC, PC, SP, R, I, F', A', F, A
 	);
@@ -405,7 +404,6 @@ begin
 		elsif rising_edge(CLK_n) then
 
 			if ClkEn = '1' then
-			dbg <= '0';
 
 			ALU_Op_r <= "0000";
 			Save_ALU_r <= '0';
@@ -702,7 +700,6 @@ begin
 					when "10" =>
 						I <= ACC;
 					when others =>
-						dbg <= '1';
 						R <= unsigned(ACC);
 					end case;
 				end if;
