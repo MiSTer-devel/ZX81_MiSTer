@@ -112,7 +112,7 @@ assign VIDEO_ARX = status[1] ? 8'd16 : 8'd4;
 assign VIDEO_ARY = status[1] ? 8'd9  : 8'd3;
 
 `include "build_id.v"
-localparam CONF_STR = {
+localparam CONF_STR1 = {
 	"ZX81;;",
 	"-;",
 	"F,O  P  ,Load tape;",
@@ -124,9 +124,13 @@ localparam CONF_STR = {
 	"O23,Stereo mix,none,25%,50%,100%;", 
 	"-;",
 	"O4,Model,ZX80,ZX81;",
-	"OAB,RAM size,1k,16k,32k,64k;",
-	"O8,Swap joy axle,Off,On;",
-	"OEF,CHR$128/UDG,128 Chars,64 Chars,Disabled;",
+	"OAB,Main RAM,16KB,32KB,48KB,1KB;",
+	"OG,Low RAM,Off,8KB;"
+};
+
+localparam CONF_STR2 = {
+	"EF,CHR$128/UDG,128 Chars,64 Chars,Disabled;",
+	"O8,Swap joystick X/Y,Off,On;",
 	"R0,Reset;",
 	"V,v1.0.",`BUILD_DATE
 };
@@ -175,10 +179,10 @@ wire [31:0] status;
 
 wire        forced_scandoubler;
 
-hps_io #(.STRLEN($size(CONF_STR)>>3)) hps_io
+hps_io #(.STRLEN(($size(CONF_STR1)>>3) + 1 + ($size(CONF_STR2)>>3))) hps_io
 (
 	.clk_sys(clk_sys),
-	.conf_str(CONF_STR),
+	.conf_str({CONF_STR1, status[16] ? "O" : "+", CONF_STR2}),
 	.HPS_BUS(HPS_BUS),
 
 	.ps2_key(ps2_key),
@@ -262,13 +266,12 @@ always @(posedge clk_sys) begin
 	reset <= buttons[1] | status[0] | (mod[1] & Fn[11]);
 	if (reset) begin
 		zx81 <= status[4];
-		mem_size <= status[11:10];
+		mem_size <= status[11:10] + 1'd1;
 		tape_ready <= 0;
 	end
 end
 
 //////////////////   MEMORY   //////////////////
-
 dpram #(.ADDRWIDTH(16)) ram
 (
 	.clock(clk_sys),
@@ -285,18 +288,16 @@ dpram #(.ADDRWIDTH(14), .NUMWORDS(12288), .MEM_INIT_FILE("zx8x.mif")) rom
 	.q_a(rom_out)
 );
 
-//wire        chr128_e  = (addr[15:13] == 'b001); // 8KB at 2000h
-wire        chr128_e  = zx81 & ~status[15] & (addr[15:10] == 'b001100); // 1KB at 3000h
-
 wire [15:0] ram_a;
-wire        ram_e_64k = &mem_size & (addr[13] | (addr[15] & nM1));
-wire        ram_e  = addr[14] | ram_e_64k | chr128_e;
+wire        ram_e_8k   = status[16] & (addr[14:13] == 'b01) & ~ram_e_data;
+wire        ram_e_data = nM1 & addr[15] & mem_size[1] & (mem_size[0] | ~addr[14]);
+wire        ram_e  = addr[14] | ram_e_data | ram_e_8k;
 wire        ram_we = ~nWR & ~nMREQ & ram_e;
 wire  [7:0] ram_in = tapeloader ? tape_in_byte_r : cpu_dout;
 wire  [7:0] ram_out;
 
-wire [12:0] rom_a  = nRFSH ? addr[12:0] : { addr[12:9]+(chr128_e & ram_data_latch[7] & addr[8] & ~status[14]), ram_data_latch[5:0], row_counter };
-wire			rom_e  = ~addr[14] & ~addr[13] & (~addr[12] | zx81) & ~ram_e_64k;
+wire [12:0] rom_a  = nRFSH ? addr[12:0] : { addr[12:9]+(addr[13] & ram_data_latch[7] & addr[8] & ~status[14]), ram_data_latch[5:0], row_counter };
+wire			rom_e  = ~addr[14] & ~addr[13] & (~addr[12] | zx81) & ~ram_e_data;
 wire  [7:0] rom_out;
 
 wire  [7:0] mem_out;
@@ -308,13 +309,13 @@ always_comb begin
 		default: mem_out = 8'hFF;
 	endcase
 
-	casex({tapeloader, chr128_e, mem_size })
-		'b1_X_XX: ram_a = { ~&mem_size, &mem_size, ioctl_index[7:6] ? tape_addr + 4'd8 : tape_addr-1'd1}; // loading address
-		'b0_1_XX: ram_a = { 3'b000,               rom_a      }; //chr128/UDG
-		'b0_0_00: ram_a = { 6'b100000,            addr[9:0]  }; //1k
-		'b0_0_01: ram_a = { 2'b10,                addr[13:0] }; //16k
-		'b0_0_10: ram_a = { 1'b1, addr[15] & nM1, addr[13:0] }; //32k
-		'b0_0_11: ram_a = { addr[15] & nM1,       addr[14:0] }; //64k
+	casex({tapeloader, ram_e_8k, mem_size, addr[15] & nM1})
+		'b1_X_XX_X: ram_a = { 2'b01, ioctl_index[7:6] ? tape_addr + 4'd8 : tape_addr-1'd1}; // loading address
+		'b0_1_XX_X: ram_a = { 3'b001,  ~status[15] ? rom_a : addr[12:0] }; //8K at 2000h
+		'b0_0_00_X: ram_a = { 6'b010000,                     addr[9:0]  }; //1k
+		'b0_0_01_X,                                                        //16K 
+		'b0_0_1X_0: ram_a = { 2'b01,                         addr[13:0] }; //main 16k for 32K/48K
+		'b0_0_1X_1: ram_a = { 1'b1, ~addr[14] & mem_size[0], addr[13:0] }; //data 16k/32k for 32K/48K
 	endcase
 end
 
