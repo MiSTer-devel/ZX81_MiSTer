@@ -114,7 +114,6 @@ assign VIDEO_ARY = status[1] ? 8'd9  : 8'd3;
 `include "build_id.v"
 localparam CONF_STR1 = {
 	"ZX81;;",
-	"-;",
 	"F,O  P  ,Load tape;",
 	"-;",
 	"O1,Aspect ratio,4:3,16:9;",
@@ -124,6 +123,7 @@ localparam CONF_STR1 = {
 	"O23,Stereo mix,none,25%,50%,100%;", 
 	"-;",
 	"O4,Model,ZX81,ZX80;",
+	"OHI,Slow mode speed,Original,NoWait,x2,x8;",
 	"OAB,Main RAM,16KB,32KB,48KB,1KB;",
 	"OG,Low RAM,Off,8KB;"
 };
@@ -149,14 +149,24 @@ pll pll
 
 reg  ce_cpu_p;
 reg  ce_cpu_n;
-reg  ce_6m5,ce_psg;
+reg  ce_6m5,ce_3m25,ce_psg;
 
 always @(negedge clk_sys) begin
 	reg [4:0] counter = 0;
+	reg [1:0] turbo = 0;
 
-	counter  <=  counter + 1'd1;
-	ce_cpu_p <= !counter[3] & !counter[2:0];
-	ce_cpu_n <=  counter[3] & !counter[2:0];
+	counter <= counter + 1'd1;
+	if(~slow_mode) turbo <= status[18:17];
+
+	if(slow_mode & turbo[1]) begin
+		ce_cpu_p <= (!counter[2] & !counter[1:0]) | turbo[0];
+		ce_cpu_n <= ( counter[2] & !counter[1:0]) | turbo[0];
+	end
+	else begin
+		ce_cpu_p <= !counter[3] & !counter[2:0];
+		ce_cpu_n <=  counter[3] & !counter[2:0];
+	end
+	ce_3m25  <= !counter[3:0];
 	ce_6m5   <= !counter[2:0];
 	ce_psg   <= !counter[4:0];
 end
@@ -275,15 +285,15 @@ always @(posedge clk_sys) begin
 	int timeout;
 	reg old_download;
 	old_download <= ioctl_download;
-	if(~ioctl_download & old_download & ioctl_index) tape_ready <= 1;
-	
+	if(~ioctl_download && old_download && ioctl_index) tape_ready <= 1;
+
 	reset <= buttons[1] | status[0] | (mod[1] & Fn[11]) | |timeout;
 	if (reset) begin
 		zx81 <= ~status[4];
 		mem_size <= status[11:10] + 1'd1;
 		tape_ready <= 0;
 	end
-	
+
 	if(timeout) timeout <= timeout - 1;
 	if(zx81 != ~status[4] || mem_size != (status[11:10] + 1'd1)) timeout <= 1000000;
 end
@@ -304,7 +314,11 @@ dpram #(.ADDRWIDTH(14), .NUMWORDS(12288), .MEM_INIT_FILE("zx8x.mif")) rom
 (
 	.clock(clk_sys),
 	.address_a({(zx81 ? rom_a[12] : 2'h2), rom_a[11:0]}),
-	.q_a(rom_out)
+	.q_a(rom_out),
+
+	.address_b(ioctl_addr[13:0]),
+	.wren_b(ioctl_wr && !ioctl_index),
+	.data_b(ioctl_dout)
 );
 
 wire        low16k_e = ~addr[15] | ~mem_size[1];
@@ -449,14 +463,33 @@ end
 
 // ZX81 upgrade
 // http://searle.hostei.com/grant/zx80/zx80nmi.html
-wire nWAIT = ~nHALT | nNMI;
+wire nWAIT = ~nHALT | nNMI | (slow_mode & |status[18:17]);
 wire nNMI = ~NMIlatch | ~hsync;
+
+reg slow_mode = 0;
+always @(posedge clk_sys) begin
+	reg [7:0] fcnt;
+	reg old_halt, old_latch;
+
+	old_latch <= NMIlatch;
+	old_halt  <= nHALT;
+
+	// Time out to enable turbo modes after reset,
+	// otherwise ZX81 FW won't enter slow mode!
+	if(~old_latch & NMIlatch) begin
+		if(&fcnt) slow_mode <= 1;
+		else fcnt <= fcnt + 1'd1;
+	end
+	if(old_halt & ~nHALT) slow_mode <= 0;
+	
+	if(reset) {fcnt,slow_mode} <= 0;
+end
 
 reg [7:0] sync_counter;
 reg       NMIlatch;
 reg       hsync;
 always @(posedge clk_sys) begin
-	if(ce_cpu_p) begin
+	if(ce_3m25) begin
 		sync_counter <= sync_counter + 1'd1;
 		if(sync_counter == 206) sync_counter <= 0;
 		if(sync_counter == 15)  hsync <= 1;
