@@ -272,16 +272,20 @@ reg  [1:0] mem_size; //00-1k, 01 - 16k 10 - 32k
 wire       hz50 = ~status[6];
 
 always @(posedge clk_sys) begin
+	int timeout;
 	reg old_download;
 	old_download <= ioctl_download;
 	if(~ioctl_download & old_download & ioctl_index) tape_ready <= 1;
 	
-	reset <= buttons[1] | status[0] | (mod[1] & Fn[11]);
+	reset <= buttons[1] | status[0] | (mod[1] & Fn[11]) | |timeout;
 	if (reset) begin
 		zx81 <= ~status[4];
 		mem_size <= status[11:10] + 1'd1;
 		tape_ready <= 0;
 	end
+	
+	if(timeout) timeout <= timeout - 1;
+	if(zx81 != ~status[4] || mem_size != (status[11:10] + 1'd1)) timeout <= 1000000;
 end
 
 //////////////////   MEMORY   //////////////////
