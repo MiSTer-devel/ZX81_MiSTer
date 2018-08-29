@@ -130,7 +130,7 @@ localparam CONF_STR1 = {
 
 localparam CONF_STR2 = {
 	"EF,CHR$128/UDG,128 Chars,64 Chars,Disabled;",
-	"O8,Swap joystick X/Y,Off,On;",
+	"O89,Joystick,Cursor,Sinclair,ZX81;",
 	"R0,Reset;",
 	"V,v1.0.",`BUILD_DATE
 };
@@ -239,7 +239,24 @@ T80pa cpu
 	.DI(cpu_din)
 );
 
-wire [7:0] io_dout = kbd_n ? (psg_sel ? psg_out : 8'hFF) : { tape_in, hz50, 1'b0, key_data[4:0] & ({5{addr[12]}} | ~joykeys) };
+wire [7:0] io_dout = kbd_n ? (psg_sel ? psg_out : 8'hFF) : { tape_in, hz50, 1'b0, key_data[4:0] & joy_kbd };
+
+wire [1:0] jsel = status[9:8];
+wire [4:0] joy = joystick_0 | joystick_1;
+
+//ZX81 67890
+wire [4:0] joyzx = ({5{jsel[1]}} & {joy[2], joy[3], joy[0], joy[1], joy[4]});
+
+//Sinclair 1 67890
+wire [4:0] joys1 = ({5{jsel[0]}} & {joy[1:0], joy[2], joy[3], joy[4]});
+
+//Cursor 56780
+wire [4:0] joyc1 = {5{!jsel}} & {joy[2], joy[3], joy[0], 1'b0, joy[4]};
+wire [4:0] joyc2 = {5{!jsel}} & {joy[1], 4'b0000};
+
+//map to keyboard
+wire [4:0] joy_kbd = ({5{addr[12]}} | ~(joys1 | joyc1 | joyzx)) & ({5{addr[11]}} | ~joyc2);
+
 
 always_comb begin
 	case({nMREQ, ~nM1 | nIORQ | nRD})
@@ -253,10 +270,6 @@ wire       tape_in = 0;
 reg        zx81;
 reg  [1:0] mem_size; //00-1k, 01 - 16k 10 - 32k
 wire       hz50 = ~status[6];
-wire       joyrev = status[8];
-wire [4:0] joy = joystick_0 | joystick_1;
-wire [4:0] joykeys = joyrev ? {joy[2], joy[3], joy[0], joy[1], joy[4]}:
-										{joy[1], joy[0], joy[2], joy[3], joy[4]};
 
 always @(posedge clk_sys) begin
 	reg old_download;
