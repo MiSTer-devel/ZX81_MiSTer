@@ -7,10 +7,12 @@ Port of MiST version by Szombathelyi Gyorgy
 - Selectable ZX80/ZX81
 - 16k/32k/48k RAM packs
 - 8KB with CHR$128/UDG addon
+- Turbo in Slow mode: NoWait, x2, x8
 - YM2149 sound chip (ZON X-81 compatible)
 - Joystick types: Cursor, Sinclar, ZX81
 - PAL/NTSC timings
 - Turbo loading of .o and .p files
+- Load alternative ROM.
 
 ### Install
 copy *.rbf to the root of SD card.
