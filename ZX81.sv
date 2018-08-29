@@ -488,13 +488,13 @@ always @(posedge clk_sys) begin
 		if(cnt == 0)   hsync2 <= 1;
 		if(cnt == 32)  hsync2 <= 0;
 
-		if(cnt == 408) hblank <= 1;
-		if(cnt == 64)  hblank <= 0;
+		if(cnt == 400) hblank <= 1;
+		if(cnt == 72)  hblank <= 0;
 
 		old_hsync <= hsync;
 		if(~old_hsync & hsync) begin
 			vreg <= {vreg[3:0], vsync};
-			vblank <= |vreg;
+			vblank <= |{vreg,vsync};
 			vsync2 <= vreg[2];
 			if(&vreg[3:2]) cnt <= 0;
 		end
