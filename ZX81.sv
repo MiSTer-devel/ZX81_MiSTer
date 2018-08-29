@@ -285,15 +285,17 @@ always @(posedge clk_sys) begin
 end
 
 //////////////////   MEMORY   //////////////////
+wire [7:0] ram_out;
 dpram #(.ADDRWIDTH(16)) ram
 (
 	.clock(clk_sys),
 	.address_a(ram_a),
-	.data_a(ram_in),
-	.wren_a(ram_we | tapewrite_we),
+	.data_a(tapeloader ? tape_in_byte_r : cpu_dout),
+	.wren_a((~nWR & ~nMREQ & ram_e) | tapewrite_we),
 	.q_a(ram_out)
 );
 
+wire [7:0] rom_out;
 dpram #(.ADDRWIDTH(14), .NUMWORDS(12288), .MEM_INIT_FILE("zx8x.mif")) rom
 (
 	.clock(clk_sys),
@@ -301,17 +303,14 @@ dpram #(.ADDRWIDTH(14), .NUMWORDS(12288), .MEM_INIT_FILE("zx8x.mif")) rom
 	.q_a(rom_out)
 );
 
-wire [15:0] ram_a;
-wire        ram_e_8k   = status[16] & (addr[14:13] == 'b01) & ~ram_e_data;
-wire        ram_e_data = nM1 & addr[15] & mem_size[1] & (mem_size[0] | ~addr[14]);
-wire        ram_e  = addr[14] | ram_e_data | ram_e_8k;
-wire        ram_we = ~nWR & ~nMREQ & ram_e;
-wire  [7:0] ram_in = tapeloader ? tape_in_byte_r : cpu_dout;
-wire  [7:0] ram_out;
+wire        low16k_e = ~addr[15] | ~mem_size[1];
 
-wire [12:0] rom_a  = nRFSH ? addr[12:0] : { addr[12:9]+(addr[13] & ram_data_latch[7] & addr[8] & ~status[14]), ram_data_latch[5:0], row_counter };
-wire			rom_e  = ~addr[14] & ~addr[13] & (~addr[12] | zx81) & ~ram_e_data;
-wire  [7:0] rom_out;
+wire        ramLo_e  = ~addr[14] & addr[13] & low16k_e;
+wire        ramHi_e  = addr[15] & mem_size[1] & (~addr[14] | (nM1 & mem_size[0]));
+wire        ram_e    = addr[14] | ramHi_e | (ramLo_e & status[16]);
+
+wire [12:0] rom_a    = nRFSH ? addr[12:0] : { addr[12:9]+(addr[13] & ram_data_latch[7] & addr[8] & ~status[14]), ram_data_latch[5:0], row_counter };
+wire			rom_e    = ~addr[14] & ~addr[13] & (~addr[12] | zx81) & low16k_e;
 
 wire  [7:0] mem_out;
 always_comb begin
@@ -321,14 +320,22 @@ always_comb begin
 		  'b001: mem_out = ram_out;
 		default: mem_out = 8'hFF;
 	endcase
+end
 
-	casex({tapeloader, ram_e_8k, mem_size, addr[15] & nM1})
-		'b1_X_XX_X: ram_a = { 2'b01, ioctl_index[7:6] ? tape_addr + 4'd8 : tape_addr-1'd1}; // loading address
-		'b0_1_XX_X: ram_a = { 3'b001,  ~status[15] ? rom_a : addr[12:0] }; //8K at 2000h
-		'b0_0_00_X: ram_a = { 6'b010000,                     addr[9:0]  }; //1k
-		'b0_0_01_X,                                                        //16K 
-		'b0_0_1X_0: ram_a = { 2'b01,                         addr[13:0] }; //main 16k for 32K/48K
-		'b0_0_1X_1: ram_a = { 1'b1, ~addr[14] & mem_size[0], addr[13:0] }; //data 16k/32k for 32K/48K
+wire [15:0] ram_a;
+always_comb begin
+	casex({tapeloader, ramLo_e, mem_size, addr[15:14]})
+		'b1_X_XX_XX: ram_a = {2'b01, ioctl_index[7:6] ? tape_addr + 4'd8 : tape_addr-1'd1}; // loading address
+
+		'b0_1_XX_XX: ram_a = {3'b001,  ~status[15] ? rom_a : addr[12:0] }; //8K at 2000h
+		'b0_0_00_XX: ram_a = {6'b010000, addr[9:0] }; //1k
+
+		'b0_0_01_XX,                                  //16K 
+		'b0_0_1X_0X,                                  //main 16k for 32K/48K
+		'b0_0_10_11: ram_a = {2'b01,     addr[13:0]}; //mirrored main 16k for 32K
+
+		'b0_0_1X_10: ram_a = {2'b10,     addr[13:0]}; //data 16k for 32K/48K
+		'b0_0_11_11: ram_a = {nM1, 1'b1, addr[13:0]}; //48K: last 16k on non-M1 cycle, mirrored main 16K on M1 cycle
 	endcase
 end
 
