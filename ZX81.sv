@@ -123,7 +123,7 @@ localparam CONF_STR1 = {
 	"OCD,Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%;",
 	"O23,Stereo mix,none,25%,50%,100%;", 
 	"-;",
-	"O4,Model,ZX80,ZX81;",
+	"O4,Model,ZX81,ZX80;",
 	"OAB,Main RAM,16KB,32KB,48KB,1KB;",
 	"OG,Low RAM,Off,8KB;"
 };
@@ -278,7 +278,7 @@ always @(posedge clk_sys) begin
 	
 	reset <= buttons[1] | status[0] | (mod[1] & Fn[11]);
 	if (reset) begin
-		zx81 <= status[4];
+		zx81 <= ~status[4];
 		mem_size <= status[11:10] + 1'd1;
 		tape_ready <= 0;
 	end
