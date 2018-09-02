@@ -250,24 +250,7 @@ T80pa cpu
 	.DI(cpu_din)
 );
 
-wire [7:0] io_dout = kbd_n ? (psg_sel ? psg_out : 8'hFF) : { tape_in, hz50, 1'b0, key_data[4:0] & joy_kbd };
-
-wire [1:0] jsel = status[9:8];
-wire [4:0] joy = joystick_0 | joystick_1;
-
-//ZX81 67890
-wire [4:0] joyzx = ({5{jsel[1]}} & {joy[2], joy[3], joy[0], joy[1], joy[4]});
-
-//Sinclair 1 67890
-wire [4:0] joys1 = ({5{jsel[0]}} & {joy[1:0], joy[2], joy[3], joy[4]});
-
-//Cursor 56780
-wire [4:0] joyc1 = {5{!jsel}} & {joy[2], joy[3], joy[0], 1'b0, joy[4]};
-wire [4:0] joyc2 = {5{!jsel}} & {joy[1], 4'b0000};
-
-//map to keyboard
-wire [4:0] joy_kbd = ({5{addr[12]}} | ~(joys1 | joyc1 | joyzx)) & ({5{addr[11]}} | ~joyc2);
-
+wire [7:0] io_dout = kbd_n ? (zxp_sel ? zxp_out : psg_sel ? psg_out : 8'hFF) : { tape_in, hz50, 1'b0, key_data[4:0] & joy_kbd };
 
 always_comb begin
 	case({nMREQ, ~nM1 | nIORQ | nRD})
@@ -332,8 +315,17 @@ dpram #(.ADDRWIDTH(10)) qschrs
 	.q_a(qs_out)
 );
 
-wire        low16k_e = ~addr[15] | ~mem_size[1];
+reg qs = 0;
+always @(posedge clk_sys) begin
+	reg old_f1;
+	
+	old_f1 <= Fn[1];
+	if(~old_f1 & Fn[1]) qs <= ~qs;
+	if(reset) qs <= 0;
+end
 
+
+wire        low16k_e = ~addr[15] | ~mem_size[1];
 wire        ramLo_e  = ~addr[14] & addr[13] & low16k_e;
 wire        ramHi_e  = addr[15] & mem_size[1] & (~addr[14] | (nM1 & mem_size[0]));
 wire        ram_e    = addr[14] | ramHi_e | (ramLo_e & status[16]);
@@ -610,13 +602,35 @@ wire  [4:0] key_data;
 
 keyboard kbd( .* );
 
-reg qs = 0;
+wire [1:0] jsel = status[9:8];
+wire [4:0] joy = joystick_0 | joystick_1;
+
+//ZX81 67890
+wire [4:0] joyzx = ({5{jsel[1]}} & {joy[2], joy[3], joy[0], joy[1], joy[4]});
+
+//Sinclair 1 67890
+wire [4:0] joys1 = ({5{jsel[0]}} & {joy[1:0], joy[2], joy[3], joy[4]});
+
+//Cursor 56780
+wire [4:0] joyc1 = {5{!jsel}} & {joy[2], joy[3], joy[0], 1'b0, joy[4]};
+wire [4:0] joyc2 = {5{!jsel}} & {joy[1], 4'b0000};
+
+//map to keyboard
+wire [4:0] joy_kbd = {5{zxp_use}} | (({5{addr[12]}} | ~(joys1 | joyc1 | joyzx)) & ({5{addr[11]}} | ~joyc2));
+
+
+reg [7:0] zxp_out = 'hFF;
+reg       zxp_use = 0;
+wire      zxp_sel = ~nIORQ & (addr == 'hE007);
+
 always @(posedge clk_sys) begin
-	reg old_f1;
-	
-	old_f1 <= Fn[1];
-	if(~old_f1 & Fn[1]) qs <= ~qs;
-	if(reset) qs <= 0;
+	if(reset) {zxp_use,zxp_out} <= 'hFF;
+	else if(zxp_sel & ~nWR) begin
+		zxp_out <= 'hFF;
+		if(cpu_dout == 'hAA) zxp_out <= 'hF0;
+		if(cpu_dout == 'h55) zxp_out <= 'h0F;
+		if(cpu_dout == 'hA0) {zxp_use,zxp_out} <= {1'b1, ~joy[3:0],~joy[4],3'b000};
+	end
 end
 
 endmodule
