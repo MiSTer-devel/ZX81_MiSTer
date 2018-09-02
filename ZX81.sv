@@ -130,6 +130,7 @@ localparam CONF_STR1 = {
 
 localparam CONF_STR2 = {
 	"EF,CHR$128/UDG,128 Chars,64 Chars,Disabled;",
+	"OJ,QS CHRS,Enabled(F1),Disabled;",
 	"O89,Joystick,Cursor,Sinclair,ZX81;",
 	"R0,Reset;",
 	"V,v1.0.",`BUILD_DATE
@@ -321,6 +322,16 @@ dpram #(.ADDRWIDTH(14), .NUMWORDS(12288), .MEM_INIT_FILE("zx8x.mif")) rom
 	.data_b(ioctl_dout)
 );
 
+wire [7:0] qs_out;
+dpram #(.ADDRWIDTH(10)) qschrs
+(
+	.clock(clk_sys),
+	.address_a(nRFSH ? addr[9:0] : {ram_data_latch[7], rom_a[8:0]}),
+	.wren_a(~nWR & ~nMREQ & qs_e),
+	.data_a(cpu_dout),
+	.q_a(qs_out)
+);
+
 wire        low16k_e = ~addr[15] | ~mem_size[1];
 
 wire        ramLo_e  = ~addr[14] & addr[13] & low16k_e;
@@ -330,12 +341,15 @@ wire        ram_e    = addr[14] | ramHi_e | (ramLo_e & status[16]);
 wire [12:0] rom_a    = nRFSH ? addr[12:0] : { addr[12:9]+(addr[13] & ram_data_latch[7] & addr[8] & ~status[14]), ram_data_latch[5:0], row_counter };
 wire			rom_e    = ~addr[14] & ~addr[13] & (~addr[12] | zx81) & low16k_e;
 
+wire        qs_e = nRFSH ? (addr[15:10] == 'b100001) : (qs & (addr[15:9] == 'b0001111)); //8400-87FF / 1E00-1F00
+
 wire  [7:0] mem_out;
 always_comb begin
-	casex({ tapeloader, rom_e, ram_e })
-		  'b1XX: mem_out = tape_loader_patch[addr - (zx81 ? 13'h0347 : 13'h0207)];
-		  'b01X: mem_out = rom_out;
-		  'b001: mem_out = ram_out;
+	casex({ tapeloader, ~status[19] & qs_e, rom_e, ram_e })
+		  'b1_X_XX: mem_out = tape_loader_patch[addr - (zx81 ? 13'h0347 : 13'h0207)];
+		  'b0_1_XX: mem_out = qs_out;
+		  'b0_0_1X: mem_out = rom_out;
+		  'b0_0_01: mem_out = ram_out;
 		default: mem_out = 8'hFF;
 	endcase
 end
@@ -595,5 +609,14 @@ wire  [2:0] mod;
 wire  [4:0] key_data;
 
 keyboard kbd( .* );
+
+reg qs = 0;
+always @(posedge clk_sys) begin
+	reg old_f1;
+	
+	old_f1 <= Fn[1];
+	if(~old_f1 & Fn[1]) qs <= ~qs;
+	if(reset) qs <= 0;
+end
 
 endmodule
