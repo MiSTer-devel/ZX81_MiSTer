@@ -131,6 +131,7 @@ localparam CONF_STR1 = {
 localparam CONF_STR2 = {
 	"EF,CHR$128/UDG,128 Chars,64 Chars,Disabled;",
 	"OJ,QS CHRS,Enabled(F1),Disabled;",
+	"OK,CHROMA81,Disabled,Enabled;",
 	"O89,Joystick,Cursor,Sinclair,ZX81;",
 	"R0,Reset;",
 	"V,v1.0.",`BUILD_DATE
@@ -250,7 +251,7 @@ T80pa cpu
 	.DI(cpu_din)
 );
 
-wire [7:0] io_dout = kbd_n ? (zxp_sel ? zxp_out : psg_sel ? psg_out : 8'hFF) : { tape_in, hz50, 1'b0, key_data[4:0] & joy_kbd };
+wire [7:0] io_dout = kbd_n ? (zxp_sel ? zxp_out : ch18_sel ? 8'hDF : psg_sel ? psg_out : 8'hFF) : { tape_in, hz50, 1'b0, key_data[4:0] & joy_kbd };
 
 always_comb begin
 	case({nMREQ, ~nM1 | nIORQ | nRD})
@@ -289,7 +290,7 @@ dpram #(.ADDRWIDTH(16)) ram
 	.clock(clk_sys),
 	.address_a(ram_a),
 	.data_a(tapeloader ? tape_in_byte_r : cpu_dout),
-	.wren_a((~nWR & ~nMREQ & ram_e) | tapewrite_we),
+	.wren_a((~nWR & ~nMREQ & ram_e & ~ch18_e) | tapewrite_we),
 	.q_a(ram_out)
 );
 
@@ -337,11 +338,12 @@ wire        qs_e = nRFSH ? (addr[15:10] == 'b100001) : (qs & (addr[15:9] == 'b00
 
 wire  [7:0] mem_out;
 always_comb begin
-	casex({ tapeloader, ~status[19] & qs_e, rom_e, ram_e })
-		  'b1_X_XX: mem_out = tape_loader_patch[addr - (zx81 ? 13'h0347 : 13'h0207)];
-		  'b0_1_XX: mem_out = qs_out;
-		  'b0_0_1X: mem_out = rom_out;
-		  'b0_0_01: mem_out = ram_out;
+	casex({ tapeloader, ~status[19] & qs_e, ch18_e, rom_e, ram_e })
+		  'b1_XX_XX: mem_out = tape_loader_patch[addr - (zx81 ? 13'h0347 : 13'h0207)];
+		  'b0_1X_XX: mem_out = qs_out;
+		  'b0_01_XX: mem_out = ch18_out;
+		  'b0_00_1X: mem_out = rom_out;
+		  'b0_00_01: mem_out = ram_out;
 		default: mem_out = 8'hFF;
 	endcase
 end
@@ -431,6 +433,9 @@ wire      shifter_start = nMREQ & nopgen_store & ce_cpu_p & ~NMIlatch;
 reg [7:0] shifter_reg;
 reg       inverse;
 wire      video_out = (~status[7] ^ shifter_reg[7] ^ inverse) & ~hblank & ~vblank; 
+reg [7:0] paper_reg;
+wire      border = ~paper_reg[7];
+reg [7:0] attr, attr_latch;
 
 always @(posedge clk_sys) begin
 	reg old_hsync;
@@ -442,15 +447,20 @@ always @(posedge clk_sys) begin
 		if (data_latch_enable) begin
 			ram_data_latch <= mem_out;
 			nopgen_store <= nopgen;
+			attr_latch <= ch18_out;
 		end
 
 		if (nMREQ & ce_cpu_p) inverse <= 0;
 
 		old_shifter_start <= shifter_start;
 		shifter_reg <= { shifter_reg[6:0], 1'b0 };
+		paper_reg   <= { paper_reg[6:0], 1'b0 };
+		
 		if (~old_shifter_start & shifter_start) begin
 			shifter_reg <= (~nM1 & nopgen) ? 8'h0 : mem_out;
 			inverse <= ram_data_latch[7];
+			paper_reg <= 'hFF;
+			attr <= ch18_dat[4] ? attr_latch : ch18_out;
 		end
 
 		if (~old_hsync & hsync)	row_counter <= row_counter + 1'd1;
@@ -542,6 +552,9 @@ end
 
 wire [1:0] scale = status[13:12];
 
+wire i,g,r,b;
+assign {i,g,r,b} = ~ch18_dat[5] ? {4{video_out}} : border ? ch18_dat[3:0] : video_out ? attr[7:4] : attr[3:0];
+
 video_mixer #(400,1) video_mixer
 (
 	.*,
@@ -553,9 +566,9 @@ video_mixer #(400,1) video_mixer
 	.hq2x(scale == 1),
 	.mono(0),
 
-	.R({4{video_out}}),
-	.G({4{video_out}}),
-	.B({4{video_out}}),
+	.R({r,{3{i & r}}}),
+	.G({g,{3{i & g}}}),
+	.B({b,{3{i & b}}}),
 
 	.HSync(hsync2),
 	.VSync(vsync2),
@@ -564,6 +577,30 @@ video_mixer #(400,1) video_mixer
 );
 
 assign CLK_VIDEO = clk_sys;
+
+//////////////////// CHROMA81 ////////////////////
+
+wire      ch18_sel = ~nIORQ & (addr == 'h7FEF) & status[20];
+reg [7:0] ch18_dat = 0;
+
+// mapped at C000 and accessible only in non-M1 cycle
+wire      ch18_e = status[20] & ~nMREQ & nM1 & &addr[15:14];
+
+always @(posedge clk_sys) begin
+	if(reset | ~status[20]) ch18_dat <= 0;
+	else if(ch18_sel & ~nWR) ch18_dat = cpu_dout;
+end
+
+wire [7:0] ch18_out;
+dpram #(.ADDRWIDTH(14)) chroma18
+(
+	.clock(clk_sys),
+	.address_a(nRFSH ? addr[13:0] : {ram_data_latch[7], rom_a[8:0]}),
+	.wren_a(~nWR & ~nMREQ & ch18_e),
+	.data_a(cpu_dout),
+	.q_a(ch18_out)
+);
+
 
 ////////////////////  SOUND //////////////////////
 wire [7:0] psg_out;
