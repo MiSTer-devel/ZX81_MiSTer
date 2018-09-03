@@ -251,7 +251,7 @@ T80pa cpu
 	.DI(cpu_din)
 );
 
-wire [7:0] io_dout = kbd_n ? (zxp_sel ? zxp_out : ch18_sel ? 8'hDF : psg_sel ? psg_out : 8'hFF) : { tape_in, hz50, 1'b0, key_data[4:0] & joy_kbd };
+wire [7:0] io_dout = kbd_n ? (zxp_sel ? zxp_out : ch81_sel ? 8'hDF : psg_sel ? psg_out : 8'hFF) : { tape_in, hz50, 1'b0, key_data[4:0] & joy_kbd };
 
 always_comb begin
 	case({nMREQ, ~nM1 | nIORQ | nRD})
@@ -268,15 +268,11 @@ wire       hz50 = ~status[6];
 
 always @(posedge clk_sys) begin
 	int timeout;
-	reg old_download;
-	old_download <= ioctl_download;
-	if(~ioctl_download && old_download && ioctl_index) tape_ready <= 1;
 
 	reset <= buttons[1] | status[0] | (mod[1] & Fn[11]) | |timeout;
 	if (reset) begin
 		zx81 <= ~status[4];
 		mem_size <= status[11:10] + 1'd1;
-		tape_ready <= 0;
 	end
 
 	if(timeout) timeout <= timeout - 1;
@@ -290,7 +286,7 @@ dpram #(.ADDRWIDTH(16)) ram
 	.clock(clk_sys),
 	.address_a(ram_a),
 	.data_a(tapeloader ? tape_in_byte_r : cpu_dout),
-	.wren_a((~nWR & ~nMREQ & ram_e & ~ch18_e) | tapewrite_we),
+	.wren_a((~nWR & ~nMREQ & ram_e & ~ch81_e) | tapewrite_we),
 	.q_a(ram_out)
 );
 
@@ -313,18 +309,32 @@ dpram #(.ADDRWIDTH(10)) qschrs
 	.address_a(nRFSH ? addr[9:0] : {ram_data_latch[7], rom_a[8:0]}),
 	.wren_a(~nWR & ~nMREQ & qs_e),
 	.data_a(cpu_dout),
-	.q_a(qs_out)
+	.q_a(qs_out),
+	
+	.address_b(ioctl_addr[9:0]),
+	.wren_b(ioctl_wr && ioctl_index[4:0] && (ioctl_index[7:5]==3) && !ioctl_addr[24:10]),
+	.data_b(ioctl_dout)
 );
 
 reg qs = 0;
 always @(posedge clk_sys) begin
+	reg qs_set = 0;
 	reg old_f1;
+	reg old_tapeloader = 0;
 	
 	old_f1 <= Fn[1];
 	if(~old_f1 & Fn[1]) qs <= ~qs;
-	if(reset) qs <= 0;
-end
+	
+	if(ioctl_wr) begin
+		if(ioctl_index[4:0] && (ioctl_index[7:5]==3)) qs_set <= 1;
+		else if(~ioctl_index[5]) qs_set <= 0;
+	end
+	
+	old_tapeloader <= tapeloader;
+	if(old_tapeloader & ~tapeloader & qs_set) qs <= 1;
 
+	if(reset) {qs_set,qs} <= 0;
+end
 
 wire        low16k_e = ~addr[15] | ~mem_size[1];
 wire        ramLo_e  = ~addr[14] & addr[13] & low16k_e;
@@ -338,10 +348,10 @@ wire        qs_e = nRFSH ? (addr[15:10] == 'b100001) : (qs & (addr[15:9] == 'b00
 
 wire  [7:0] mem_out;
 always_comb begin
-	casex({ tapeloader, ~status[19] & qs_e, ch18_e, rom_e, ram_e })
+	casex({ tapeloader, ~status[19] & qs_e, ch81_e, rom_e, ram_e })
 		  'b1_XX_XX: mem_out = tape_loader_patch[addr - (zx81 ? 13'h0347 : 13'h0207)];
 		  'b0_1X_XX: mem_out = qs_out;
-		  'b0_01_XX: mem_out = ch18_out;
+		  'b0_01_XX: mem_out = ch81_out;
 		  'b0_00_1X: mem_out = rom_out;
 		  'b0_00_01: mem_out = ram_out;
 		default: mem_out = 8'hFF;
@@ -351,7 +361,7 @@ end
 wire [15:0] ram_a;
 always_comb begin
 	casex({tapeloader, ramLo_e, mem_size, addr[15:14]})
-		'b1_X_XX_XX: ram_a = {2'b01, ioctl_index[7:6] ? tape_addr + 4'd8 : tape_addr-1'd1}; // loading address
+		'b1_X_XX_XX: ram_a = {2'b01, tape_type ? tape_addr + 4'd8 : tape_addr-1'd1}; // loading address
 
 		'b0_1_XX_XX: ram_a = {3'b001,  ~status[15] ? rom_a : addr[12:0] }; //8K at 2000h
 		'b0_0_00_XX: ram_a = {6'b010000, addr[9:0] }; //1k
@@ -366,16 +376,33 @@ always_comb begin
 end
 
 ////////////////////  TAPE  //////////////////////
+reg         tape_type;
 reg   [7:0] tape_ram[16384];
 reg         tapeloader, tapewrite_we;
 reg  [13:0] tape_addr;
+reg  [13:0] tape_size;
 reg   [7:0] tape_in_byte,tape_in_byte_r;
-reg         tape_ready;  // there is data in the tape memory
+wire        tape_ready = |tape_size;  // there is data in the tape memory
 // patch the load ROM routines to loop until the memory is filled from $4000(.o file ) $4009 (.p file)
 // xor a; loop: nop or scf, jr nc loop, jp h0207 (jp h0203 - ZX80)
 reg   [7:0] tape_loader_patch[7] = '{8'haf, 8'h00, 8'h30, 8'hfd, 8'hc3, 8'h07, 8'h02};
 
-always @(posedge clk_sys) if (ioctl_wr && ioctl_index) tape_ram[ioctl_addr] <= ioctl_dout;
+always @(posedge clk_sys) begin
+	reg old_download;
+
+	if (reset) tape_size <= 0;
+	
+	if(ioctl_index[4:0] && !ioctl_index[7] && !ioctl_index[5]) begin
+		if (ioctl_wr) tape_ram[ioctl_addr] <= ioctl_dout;
+		
+		old_download <= ioctl_download;
+		if(old_download && ~ioctl_download) begin
+			tape_size <= ioctl_addr[13:0];
+			tape_type <= ioctl_index[6];
+		end
+	end
+end
+
 always @(posedge clk_sys) tape_in_byte <= tape_ram[tape_addr];
 
 always @(posedge clk_sys) begin
@@ -384,7 +411,7 @@ always @(posedge clk_sys) begin
 	old_nM1 <= nM1;
 	tapewrite_we <= 0;
 	
-	if (~nM1 & old_nM1 & tape_ready) begin
+	if (~nM1 & old_nM1) begin
 		if (zx81) begin
 			if (addr == 16'h0347) begin
 				tape_loader_patch[1] <= 8'h00; //nop
@@ -409,7 +436,7 @@ always @(posedge clk_sys) begin
 	end
 
 	if (tapeloader & ce_cpu_p) begin
-		if (tape_addr != ioctl_addr) begin
+		if (tape_addr < tape_size) begin
 			tape_addr <= tape_addr + 1'h1;
 			tape_in_byte_r <= tape_in_byte;
 			tapewrite_we <= 1;
@@ -447,7 +474,7 @@ always @(posedge clk_sys) begin
 		if (data_latch_enable) begin
 			ram_data_latch <= mem_out;
 			nopgen_store <= nopgen;
-			attr_latch <= ch18_out;
+			attr_latch <= ch81_out;
 		end
 
 		if (nMREQ & ce_cpu_p) inverse <= 0;
@@ -460,7 +487,7 @@ always @(posedge clk_sys) begin
 			shifter_reg <= (~nM1 & nopgen) ? 8'h0 : mem_out;
 			inverse <= ram_data_latch[7];
 			paper_reg <= 'hFF;
-			attr <= ch18_dat[4] ? attr_latch : ch18_out;
+			attr <= ch81_dat[4] ? attr_latch : ch81_out;
 		end
 
 		if (~old_hsync & hsync)	row_counter <= row_counter + 1'd1;
@@ -553,7 +580,7 @@ end
 wire [1:0] scale = status[13:12];
 
 wire i,g,r,b;
-assign {i,g,r,b} = ~ch18_dat[5] ? {4{video_out}} : border ? ch18_dat[3:0] : video_out ? attr[7:4] : attr[3:0];
+assign {i,g,r,b} = ~ch81_dat[5] ? {4{video_out}} : border ? ch81_dat[3:0] : video_out ? attr[7:4] : attr[3:0];
 
 video_mixer #(400,1) video_mixer
 (
@@ -580,27 +607,44 @@ assign CLK_VIDEO = clk_sys;
 
 //////////////////// CHROMA81 ////////////////////
 
-wire      ch18_sel = ~nIORQ & (addr == 'h7FEF) & status[20];
-reg [7:0] ch18_dat = 0;
+wire      ch81_sel = ~nIORQ & (addr == 'h7FEF) & status[20];
+reg [7:0] ch81_dat = 0;
 
 // mapped at C000 and accessible only in non-M1 cycle
-wire      ch18_e = status[20] & ~nMREQ & nM1 & &addr[15:14];
+wire      ch81_e = status[20] & ~nMREQ & nM1 & &addr[15:14];
 
 always @(posedge clk_sys) begin
-	if(reset | ~status[20]) ch18_dat <= 0;
-	else if(ch18_sel & ~nWR) ch18_dat = cpu_dout;
+	reg set_m0 = 0;
+	reg old_tapeloader = 0;
+
+	if(reset | ~status[20]) {set_m0, ch81_dat} <= 0;
+	else if(ch81_sel & ~nWR) ch81_dat = cpu_dout;
+	
+	if(ioctl_wr) begin
+		if(ioctl_index[4:0] && (ioctl_index[7:5]==1)) begin
+			set_m0 <= 1;
+			if(ioctl_addr == 1024) ch81_dat <= ioctl_dout[3:0];
+		end
+		else if(~ioctl_index[5]) set_m0 <= 0;
+	end
+	
+	old_tapeloader <= tapeloader;
+	if(old_tapeloader & ~tapeloader & set_m0 & status[20]) ch81_dat[5:4] <= 2'b10;
 end
 
-wire [7:0] ch18_out;
-dpram #(.ADDRWIDTH(14)) chroma18
+wire [7:0] ch81_out;
+dpram #(.ADDRWIDTH(14)) chroma81
 (
 	.clock(clk_sys),
 	.address_a(nRFSH ? addr[13:0] : {ram_data_latch[7], rom_a[8:0]}),
-	.wren_a(~nWR & ~nMREQ & ch18_e),
+	.wren_a(~nWR & ~nMREQ & ch81_e),
 	.data_a(cpu_dout),
-	.q_a(ch18_out)
+	.q_a(ch81_out),
+	
+	.address_b(ioctl_addr[13:0]),
+	.data_b(ioctl_dout),
+	.wren_b(ioctl_wr && ioctl_index[4:0] && (ioctl_index[7:5]==1) && !ioctl_addr[24:10])
 );
-
 
 ////////////////////  SOUND //////////////////////
 wire [7:0] psg_out;
