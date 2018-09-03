@@ -119,6 +119,7 @@ localparam CONF_STR1 = {
 	"O1,Aspect ratio,4:3,16:9;",
 	"O6,Video frequency,50Hz,60Hz;",
 	"O7,Inverse video,Off,On;",
+	"O5,Black border,Off,On;",
 	"OCD,Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%;",
 	"O23,Stereo mix,none,25%,50%,100%;", 
 	"-;",
@@ -428,16 +429,17 @@ wire      data_latch_enable = nRFSH & ce_cpu_p & ~nMREQ;
 reg [7:0] ram_data_latch;
 reg       nopgen_store;
 reg [2:0] row_counter;
-wire      shifter_start = nMREQ & nopgen_store & ce_cpu_p & ~NMIlatch;
+wire      shifter_start = nMREQ & nopgen_store & ce_cpu_p & shifter_en & ~NMIlatch;
 reg [7:0] shifter_reg;
 reg       inverse;
-wire      video_out = (~status[7] ^ shifter_reg[7] ^ inverse) & ~hblank & ~vblank; 
+wire      video_out = (~status[7] ^ shifter_reg[7] ^ inverse);
 reg [7:0] paper_reg;
 wire      border = ~paper_reg[7];
 reg [7:0] attr, attr_latch;
+reg       shifter_en;
 
 always @(posedge clk_sys) begin
-	reg old_hsync;
+	reg old_hsync, old_hblank;
 	reg old_shifter_start;
 
 	if (ce_6m5) begin
@@ -464,6 +466,11 @@ always @(posedge clk_sys) begin
 
 		if (~old_hsync & hsync)	row_counter <= row_counter + 1'd1;
 		if (vs) row_counter <= 0;
+
+		//extended suppress to reduce garbage
+		old_hblank <= hblank;
+		if(~old_hblank & hblank) shifter_en <= 0;
+		if(old_hblank & ~hblank) shifter_en <= ~NMIlatch;
 	end
 end
 
@@ -483,7 +490,7 @@ wire nNMI = ~NMIlatch | ~hsync;
 
 reg slow_mode = 0;
 always @(posedge clk_sys) begin
-	reg [7:0] fcnt;
+	reg [6:0] fcnt;
 	reg old_halt, old_latch;
 
 	old_latch <= NMIlatch;
@@ -549,11 +556,18 @@ always @(posedge clk_sys) begin
 	end
 end
 
-wire [1:0] scale = status[13:12];
-
 wire i,g,r,b;
-assign {i,g,r,b} = ~ch81_dat[5] ? {4{video_out}} : border ? ch81_dat[3:0] : video_out ? attr[7:4] : attr[3:0];
+always_comb begin
+	casex({status[5] & border, ch81_dat[5], border, video_out})
+		'b1XXX: {i,g,r,b} = 0;
+		'b00XX: {i,g,r,b} = {4{video_out}};
+		'b011X: {i,g,r,b} = ch81_dat[3:0];
+		'b0101: {i,g,r,b} = attr[7:4];
+		'b0100: {i,g,r,b} = attr[3:0];
+	endcase
+end
 
+wire [1:0] scale = status[13:12];
 video_mixer #(400,1) video_mixer
 (
 	.*,
