@@ -134,7 +134,7 @@ localparam CONF_STR2 = {
 	"OK,CHROMA81,Disabled,Enabled;",
 	"O89,Joystick,Cursor,Sinclair,ZX81;",
 	"R0,Reset;",
-	"V,v1.0.",`BUILD_DATE
+	"V,v1.10.",`BUILD_DATE
 };
 
 ////////////////////   CLOCKS   ///////////////////
@@ -251,100 +251,25 @@ T80pa cpu
 	.DI(cpu_din)
 );
 
-wire [7:0] io_dout = kbd_n ? (zxp_sel ? zxp_out : ch81_sel ? 8'hDF : psg_sel ? psg_out : 8'hFF) : { tape_in, hz50, 1'b0, key_data[4:0] & joy_kbd };
-
 always_comb begin
 	case({nMREQ, ~nM1 | nIORQ | nRD})
-	    'b01: cpu_din = (~nM1 & nopgen) ? 8'h0 : mem_out;
+	    'b01: cpu_din = (~nM1 & nopgen) ? 8'h00 : mem_out;
 	    'b10: cpu_din = io_dout;
 	 default: cpu_din = 8'hFF;
 	endcase
 end
 
 wire       tape_in = 0;
-reg        zx81;
-reg  [1:0] mem_size; //00-1k, 01 - 16k 10 - 32k
-wire       hz50 = ~status[6];
-
-always @(posedge clk_sys) begin
-	int timeout;
-
-	reset <= buttons[1] | status[0] | (mod[1] & Fn[11]) | |timeout;
-	if (reset) begin
-		zx81 <= ~status[4];
-		mem_size <= status[11:10] + 1'd1;
-	end
-
-	if(timeout) timeout <= timeout - 1;
-	if(zx81 != ~status[4] || mem_size != (status[11:10] + 1'd1)) timeout <= 1000000;
+wire [7:0] io_dout;
+always_comb begin
+	casex({~kbd_n, zxp_sel, ch81_sel, psg_sel})
+		'b1XXX: io_dout = { tape_in, hz50, 1'b0, key_data[4:0] & joy_kbd };
+		'b01XX: io_dout = zxp_out;
+		'b001X: io_dout = 8'hDF;
+		'b0001: io_dout = psg_out;
+		'b0000: io_dout = 8'hFF;
+	endcase
 end
-
-//////////////////   MEMORY   //////////////////
-wire [7:0] ram_out;
-dpram #(.ADDRWIDTH(16)) ram
-(
-	.clock(clk_sys),
-	.address_a(ram_a),
-	.data_a(tapeloader ? tape_in_byte_r : cpu_dout),
-	.wren_a((~nWR & ~nMREQ & ram_e & ~ch81_e) | tapewrite_we),
-	.q_a(ram_out)
-);
-
-wire [7:0] rom_out;
-dpram #(.ADDRWIDTH(14), .NUMWORDS(12288), .MEM_INIT_FILE("zx8x.mif")) rom
-(
-	.clock(clk_sys),
-	.address_a({(zx81 ? rom_a[12] : 2'h2), rom_a[11:0]}),
-	.q_a(rom_out),
-
-	.address_b(ioctl_addr[13:0]),
-	.wren_b(ioctl_wr && !ioctl_index),
-	.data_b(ioctl_dout)
-);
-
-wire [7:0] qs_out;
-dpram #(.ADDRWIDTH(10)) qschrs
-(
-	.clock(clk_sys),
-	.address_a(nRFSH ? addr[9:0] : {ram_data_latch[7], rom_a[8:0]}),
-	.wren_a(~nWR & ~nMREQ & qs_e),
-	.data_a(cpu_dout),
-	.q_a(qs_out),
-	
-	.address_b(ioctl_addr[9:0]),
-	.wren_b(ioctl_wr && ioctl_index[4:0] && (ioctl_index[7:5]==3) && !ioctl_addr[24:10]),
-	.data_b(ioctl_dout)
-);
-
-reg qs = 0;
-always @(posedge clk_sys) begin
-	reg qs_set = 0;
-	reg old_f1;
-	reg old_tapeloader = 0;
-	
-	old_f1 <= Fn[1];
-	if(~old_f1 & Fn[1]) qs <= ~qs;
-	
-	if(ioctl_wr) begin
-		if(ioctl_index[4:0] && (ioctl_index[7:5]==3)) qs_set <= 1;
-		else if(~ioctl_index[5]) qs_set <= 0;
-	end
-	
-	old_tapeloader <= tapeloader;
-	if(old_tapeloader & ~tapeloader & qs_set) qs <= 1;
-
-	if(reset) {qs_set,qs} <= 0;
-end
-
-wire        low16k_e = ~addr[15] | ~mem_size[1];
-wire        ramLo_e  = ~addr[14] & addr[13] & low16k_e;
-wire        ramHi_e  = addr[15] & mem_size[1] & (~addr[14] | (nM1 & mem_size[0]));
-wire        ram_e    = addr[14] | ramHi_e | (ramLo_e & status[16]);
-
-wire [12:0] rom_a    = nRFSH ? addr[12:0] : { addr[12:9]+(addr[13] & ram_data_latch[7] & addr[8] & ~status[14]), ram_data_latch[5:0], row_counter };
-wire			rom_e    = ~addr[14] & ~addr[13] & (~addr[12] | zx81) & low16k_e;
-
-wire        qs_e = nRFSH ? (addr[15:10] == 'b100001) : (qs & (addr[15:9] == 'b0001111)); //8400-87FF / 1E00-1F00
 
 wire  [7:0] mem_out;
 always_comb begin
@@ -357,6 +282,12 @@ always_comb begin
 		default: mem_out = 8'hFF;
 	endcase
 end
+
+//////////////////   MEMORY   //////////////////
+wire low16k_e = ~addr[15] | ~mem_size[1];
+wire ramLo_e  = ~addr[14] & addr[13] & low16k_e;
+wire ramHi_e  = addr[15] & mem_size[1] & (~addr[14] | (nM1 & mem_size[0]));
+wire ram_e    = addr[14] | ramHi_e | (ramLo_e & status[16]);
 
 wire [15:0] ram_a;
 always_comb begin
@@ -373,6 +304,47 @@ always_comb begin
 		'b0_0_1X_10: ram_a = {2'b10,     addr[13:0]}; //data 16k for 32K/48K
 		'b0_0_11_11: ram_a = {nM1, 1'b1, addr[13:0]}; //48K: last 16k on non-M1 cycle, mirrored main 16K on M1 cycle
 	endcase
+end
+
+wire [7:0] ram_out;
+dpram #(.ADDRWIDTH(16)) ram
+(
+	.clock(clk_sys),
+	.address_a(ram_a),
+	.data_a(tapeloader ? tape_in_byte_r : cpu_dout),
+	.wren_a((~nWR & ~nMREQ & ram_e & ~ch81_e) | tapewrite_we),
+	.q_a(ram_out)
+);
+
+wire [12:0] rom_a = nRFSH ? addr[12:0] : { addr[12:9]+(addr[13] & ram_data_latch[7] & addr[8] & ~status[14]), ram_data_latch[5:0], row_counter };
+wire        rom_e = ~addr[14] & ~addr[13] & (~addr[12] | zx81) & low16k_e;
+wire  [7:0] rom_out;
+dpram #(.ADDRWIDTH(14), .NUMWORDS(12288), .MEM_INIT_FILE("zx8x.mif")) rom
+(
+	.clock(clk_sys),
+	.address_a({(zx81 ? rom_a[12] : 2'h2), rom_a[11:0]}),
+	.q_a(rom_out),
+
+	.address_b(ioctl_addr[13:0]),
+	.wren_b(ioctl_wr && !ioctl_index),
+	.data_b(ioctl_dout)
+);
+
+reg        zx81;
+reg  [1:0] mem_size; //0 - 1k, 1 - 16k, 2 - 32k, 3 - 48k
+wire       hz50 = ~status[6];
+
+always @(posedge clk_sys) begin
+	int timeout;
+
+	reset <= buttons[1] | status[0] | (mod[1] & Fn[11]) | |timeout;
+	if (reset) begin
+		zx81 <= ~status[4];
+		mem_size <= status[11:10] + 1'd1;
+	end
+
+	if(timeout) timeout <= timeout - 1;
+	if(zx81 != ~status[4] || mem_size != (status[11:10] + 1'd1)) timeout <= 1000000;
 end
 
 ////////////////////  TAPE  //////////////////////
@@ -606,12 +578,10 @@ video_mixer #(400,1) video_mixer
 assign CLK_VIDEO = clk_sys;
 
 //////////////////// CHROMA81 ////////////////////
-
-wire      ch81_sel = ~nIORQ & (addr == 'h7FEF) & status[20];
-reg [7:0] ch81_dat = 0;
-
 // mapped at C000 and accessible only in non-M1 cycle
 wire      ch81_e = status[20] & ~nMREQ & nM1 & &addr[15:14];
+wire      ch81_sel = ~nIORQ & (addr == 'h7FEF) & status[20];
+reg [7:0] ch81_dat = 0;
 
 always @(posedge clk_sys) begin
 	reg set_m0 = 0;
@@ -645,6 +615,43 @@ dpram #(.ADDRWIDTH(14)) chroma81
 	.data_b(ioctl_dout),
 	.wren_b(ioctl_wr && ioctl_index[4:0] && (ioctl_index[7:5]==1) && !ioctl_addr[24:10])
 );
+
+//////////////////// QS CHRS /////////////////////
+wire       qs_e = nRFSH ? (addr[15:10] == 'b100001) : (qs & (addr[15:9] == 'b0001111)); //8400-87FF / 1E00-1F00
+wire [7:0] qs_out;
+
+dpram #(.ADDRWIDTH(10)) qschrs
+(
+	.clock(clk_sys),
+	.address_a(nRFSH ? addr[9:0] : {ram_data_latch[7], rom_a[8:0]}),
+	.wren_a(~nWR & ~nMREQ & qs_e),
+	.data_a(cpu_dout),
+	.q_a(qs_out),
+	
+	.address_b(ioctl_addr[9:0]),
+	.wren_b(ioctl_wr && ioctl_index[4:0] && (ioctl_index[7:5]==3) && !ioctl_addr[24:10]),
+	.data_b(ioctl_dout)
+);
+
+reg qs = 0;
+always @(posedge clk_sys) begin
+	reg qs_set = 0;
+	reg old_f1;
+	reg old_tapeloader = 0;
+	
+	old_f1 <= Fn[1];
+	if(~old_f1 & Fn[1]) qs <= ~qs;
+	
+	if(ioctl_wr) begin
+		if(ioctl_index[4:0] && (ioctl_index[7:5]==3)) qs_set <= 1;
+		else if(~ioctl_index[5]) qs_set <= 0;
+	end
+	
+	old_tapeloader <= tapeloader;
+	if(old_tapeloader & ~tapeloader & qs_set) qs <= 1;
+
+	if(reset) {qs_set,qs} <= 0;
+end
 
 ////////////////////  SOUND //////////////////////
 wire [7:0] psg_out;
