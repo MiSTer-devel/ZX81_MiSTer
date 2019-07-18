@@ -1,0 +1,5 @@
+set_global_assignment -name QIP_FILE t80/T80.qip
+set_global_assignment -name SYSTEMVERILOG_FILE YM2149.sv
+set_global_assignment -name SYSTEMVERILOG_FILE keyboard.sv
+set_global_assignment -name VERILOG_FILE dpram.v
+set_global_assignment -name SYSTEMVERILOG_FILE ZX81.sv
