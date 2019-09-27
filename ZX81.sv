@@ -601,6 +601,12 @@ wire [1:0] scale = status[13:12];
 assign VGA_SL = scale ? scale - 1'd1 : 2'd0;
 assign VGA_F1 = 0;
 
+reg VSync, HSync;
+always @(posedge CLK_VIDEO) begin
+	HSync <= hsync2;
+	if(~HSync & hsync2) VSync <= vsync2;
+end
+ 
 video_mixer #(400,1) video_mixer
 (
 	.*,
@@ -616,8 +622,6 @@ video_mixer #(400,1) video_mixer
 	.G({g,{3{i & g}}}),
 	.B({b,{3{i & b}}}),
 
-	.HSync(hsync2),
-	.VSync(vsync2),
 	.HBlank(hblank),
 	.VBlank(vblank)
 );
