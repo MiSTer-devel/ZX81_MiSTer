@@ -3,7 +3,7 @@
 Port of MiST version by Szombathelyi Gyorgy
 
 ### Features:
-- Based on Grant Searle's [ZX80 page](http://searle.hostei.com/grant/zx80/zx80.html)
+- Based on Grant Searle's [ZX80 page](http://searle.x10host.com/zx80/zx80.html)
 - Selectable ZX80/ZX81
 - 16k/32k/48k RAM packs
 - 8KB with CHR$128/UDG addon
