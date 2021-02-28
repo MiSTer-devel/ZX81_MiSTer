@@ -42,8 +42,9 @@ module emu
 	output        CE_PIXEL,
 
 	//Video aspect ratio for HDMI. Most retro systems have ratio 4:3.
-	output [11:0] VIDEO_ARX,
-	output [11:0] VIDEO_ARY,
+	//if VIDEO_ARX[12] or VIDEO_ARY[12] is set then [11:0] contains scaled size instead of aspect ratio.
+	output [12:0] VIDEO_ARX,
+	output [12:0] VIDEO_ARY,
 
 	output  [7:0] VGA_R,
 	output  [7:0] VGA_G,
@@ -54,6 +55,9 @@ module emu
 	output        VGA_F1,
 	output [1:0]  VGA_SL,
 	output        VGA_SCALER, // Force VGA scaler
+
+	input  [11:0] HDMI_WIDTH,
+	input  [11:0] HDMI_HEIGHT,
 
 `ifdef USE_FB
 	// Use framebuffer in DDRAM (USE_FB=1 in qsf)
@@ -186,9 +190,23 @@ assign BUTTONS   = 0;
 assign VGA_SCALER= 0;
 
 wire [1:0] ar = status[22:21];
+wire       vcrop_en = status[23];
+reg        en216p;
+always @(posedge CLK_VIDEO) begin
+	en216p <= ((HDMI_WIDTH == 1920) && (HDMI_HEIGHT == 1080) && !forced_scandoubler && !scale);
+end
 
-assign VIDEO_ARX = (!ar) ? 12'd4 : (ar - 1'd1);
-assign VIDEO_ARY = (!ar) ? 12'd3 : 12'd0;
+wire vga_de;
+video_freak video_freak
+(
+	.*,
+	.VGA_DE_IN(vga_de),
+	.ARX((!ar) ? 12'd4 : (ar - 1'd1)),
+	.ARY((!ar) ? 12'd3 : 12'd0),
+	.CROP_SIZE((en216p & vcrop_en) ? (hz50 ? 10'd270 : 10'd216) : 10'd0),
+	.CROP_OFF(0),
+	.SCALE(status[25:24])
+);
 
 `include "build_id.v"
 localparam CONF_STR = {
@@ -200,6 +218,9 @@ localparam CONF_STR = {
 	"O7,Inverse video,Off,On;",
 	"O5,Black border,Off,On;",
 	"OCD,Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%;",
+	"-;",
+	"d1ON,Vertical Crop,Disabled,216p/270p(5x);",
+	"OOP,Scale,Normal,V-Integer,Narrower HV-Integer,Wider HV-Integer;",
 	"-;",
 	"O23,Stereo mix,none,25%,50%,100%;", 
 	"-;",
@@ -285,7 +306,7 @@ hps_io #(.STRLEN($size(CONF_STR)>>3)) hps_io
 
 	.buttons(buttons),
 	.status(status),
-	.status_menumask({~status[16]}), 
+	.status_menumask({en216p,~status[16]}), 
 	.forced_scandoubler(forced_scandoubler),
 	.gamma_bus(gamma_bus),
 
@@ -661,15 +682,11 @@ end
 video_mixer #(400,1,1) video_mixer
 (
 	.*,
-	.clk_vid(CLK_VIDEO),
 	.ce_pix(ce_6m5),
-	.ce_pix_out(CE_PIXEL),
-
-	.scanlines({scale==3, scale==2}),
 	.scandoubler(scale || forced_scandoubler),
 	.hq2x(scale == 1),
-	.mono(0),
 
+	.VGA_DE(vga_de),
 	.R({r,{3{i & r}}}),
 	.G({g,{3{i & g}}}),
 	.B({b,{3{i & b}}}),
