@@ -236,6 +236,8 @@ localparam CONF_STR = {
 	"OK,CHROMA81,Disabled,Enabled;",
 	"-;",
 	"O89,Joystick,Cursor,Sinclair,ZX81;",
+	"OQR,Keyboard,Normal,Ghosting,Recreated ZX,Recr+Ghosting;",
+	"-;",
 	"R0,Reset;",
 	"V,v",`BUILD_DATE
 };
@@ -810,6 +812,8 @@ wire kbd_n = nIORQ | nRD | addr[0];
 wire [11:1] Fn;
 wire  [2:0] mod;
 wire  [4:0] key_data;
+wire        recreated_zx = status[27];
+wire        ghosting     = status[26];
 
 keyboard kbd( .* );
 
