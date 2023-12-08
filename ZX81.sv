@@ -366,7 +366,16 @@ always_comb begin
 	endcase
 end
 
-wire       tape_in = 0;
+wire tape_in = tape_adc_act & tape_adc;
+wire tape_adc, tape_adc_act;
+ltc2308_tape ltc2308_tape
+(
+	.clk(CLK_50M),
+	.ADC_BUS(ADC_BUS),
+	.dout(tape_adc),
+	.active(tape_adc_act)
+);
+
 wire [7:0] io_dout;
 always_comb begin
 	casex({~kbd_n, zxp_sel, ch81_sel, psg_sel})
@@ -490,7 +499,7 @@ always @(posedge clk_sys) begin
 	old_nM1 <= nM1;
 	tapewrite_we <= 0;
 	
-	if (~nM1 & old_nM1) begin
+	if (~nM1 & old_nM1 & tape_ready) begin
 		if (zx81) begin
 			if (addr == 16'h0347) begin
 				tape_loader_patch[1] <= 8'h00; //nop
